@@ -1,0 +1,12 @@
+{
+    "canisters": {
+        "nontonin": {
+            "type": "custom",
+            "main": "src/index.ts",
+            "candid": "src/index.did",
+            "build": "npx azle nontonin",
+            "wasm": ".azle/nontonin/nontonin.wasm",
+            "gzip": true
+        }
+    }
+}

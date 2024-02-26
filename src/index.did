@@ -1,0 +1,12 @@
+service: () -> {
+    addMovie: (text, int32, int32) -> (text);
+    buyMovie: (text) -> (text);
+    editMovie: (text, int32, int32) -> (text);
+    getMovieList: () -> (text) query;
+    getRegisteredUsers: () -> (text) query;
+    login: (text, text) -> (text);
+    registerAdmin: (text, text) -> (text);
+    registerUser: (text, text) -> (text);
+    removeMovie: (text) -> (text);
+    rentMovie: (text, int32) -> (text);
+}
