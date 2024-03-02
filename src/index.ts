@@ -1,4 +1,5 @@
-import { Canister, int32, query, text, update } from 'azle';
+import { Canister, int32, query, text, update, StableBTreeMap, Result, Err, Ok } from 'azle';
+import bcrypt from 'bcryptjs';
 
 interface User {
     email: string;
@@ -14,16 +15,14 @@ interface Movie {
     rating: number; 
 }
 
-let user: User | undefined;
-let movies: Movie[] = [];
-
-const registeredUsers: User[] = [];
+const userStorage = StableBTreeMap(text, User);
+const movieStorage = StableBTreeMap(text, Movie);
 
 export default Canister({
-    registerUser: update([text, text], text, (email, password) => {
+    registerUser: update([text, text], Result(text, text), async (email, password) => {
         try {
-            const existingUser = registeredUsers.find((user) => user.email === email);
-            if (existingUser) {
+            const existingUser = userStorage.get(email);
+            if ('Some' in existingUser) {
                 throw new Error('Email is already registered. Please use a different email.');
             }
 
@@ -31,18 +30,19 @@ export default Canister({
                 throw new Error('Invalid email format. Please use an email ending with "@gmail.com".');
             }
 
-            user = { email, password, loggedIn: false, isAdmin: false };
-            registeredUsers.push(user);
-            return 'User registration successful.';
+            const hashedPassword = await bcrypt.hash(password, 10);
+            const user = { email, password: hashedPassword, loggedIn: false, isAdmin: false };
+            userStorage.insert(email, user);
+            return Ok('User registration successful.');
         } catch (error: any) {
-            return `Error: ${error.message}`;
+            return Err(`Error: ${error.message}`);
         }
     }),
 
-    registerAdmin: update([text, text], text, (email, password) => {
+    registerAdmin: update([text, text], Result(text, text), async (email, password) => {
         try {
-            const existingUser = registeredUsers.find((user) => user.email === email);
-            if (existingUser) {
+            const existingUser = userStorage.get(email);
+            if ('Some' in existingUser) {
                 throw new Error('Email is already registered. Please use a different email.');
             }
 
@@ -50,137 +50,133 @@ export default Canister({
                 throw new Error('Invalid email format for admin. Please use an email ending with "@admin.com".');
             }
 
-            user = { email, password, loggedIn: false, isAdmin: true };
-            registeredUsers.push(user);
-            return 'Admin registration successful.';
+            const hashedPassword = await bcrypt.hash(password, 10);
+            const user = { email, password: hashedPassword, loggedIn: false, isAdmin: true };
+            userStorage.insert(email, user);
+            return Ok('Admin registration successful.');
         } catch (error: any) {
-            return `Error: ${error.message}`;
+            return Err(`Error: ${error.message}`);
         }
     }),
 
-    getRegisteredUsers: query([], text, () => {
-        try {
-            if (registeredUsers.length > 0) {
-                return `List of registered users: ${JSON.stringify(registeredUsers)}`;
-            } else {
-                return 'No registered users yet.';
-            }
-        } catch (error: any) {
-            return `Error: ${error.message}`;
-        }
-    }),
-
-    login: update([text, text], text, (email, password) => {
-        const loggedInUser = registeredUsers.find((user) => user.email === email && user.password === password);
-
-        if (loggedInUser) {
-            loggedInUser.loggedIn = true;
-            return `Login successful. Welcome, ${loggedInUser.isAdmin ? 'Admin' : 'User'}.`;
+    getRegisteredUsers: query([], Result(Vec(User), text), () => {
+        const users = userStorage.values();
+        if (users.length > 0) {
+            return Ok(users);
         } else {
-            return 'Invalid email or password. Please try again.';
+            return Err('No registered users yet.');
         }
     }),
 
-    addMovie: update([text, int32, int32], text, (title, price, rating) => {
-        if (user && user.loggedIn && user.isAdmin) {
-            const existingMovie = movies.find((movie) => movie.title === title);
-            if (existingMovie) {
-                return 'Movie with this title already exists. Please use a different title.';
+    login: update([text, text], Result(text, text), async (email, password) => {
+        const user = userStorage.get(email);
+        if ('Some' in user && await bcrypt.compare(password, user.Some.password)) {
+            user.Some.loggedIn = true;
+            return Ok(`Login successful. Welcome, ${user.Some.isAdmin ? 'Admin' : 'User'}.`);
+        } else {
+            return Err('Invalid email or password. Please try again.');
+        }
+    }),
+
+    addMovie: update([text, int32, int32], Result(text, text), (title, price, rating) => {
+        const user = userStorage.get(ic.caller());
+        if ('Some' in user && user.Some.loggedIn && user.Some.isAdmin) {
+            const existingMovie = movieStorage.get(title);
+            if ('Some' in existingMovie) {
+                return Err('Movie with this title already exists. Please use a different title.');
             }
 
             if (rating < 1 || rating > 10) {
-                return 'Invalid rating. Please provide a rating between 1 and 10.';
+                return Err('Invalid rating. Please provide a rating between 1 and 10.');
             }
 
-            movies.push({
-                title, price, rating,
-                purchased: false
-            });
-            return `Movie "${title}" added successfully with a rental price of $${price} and a rating of ${rating}.`;
+            const movie = { title, price, rating, purchased: false };
+            movieStorage.insert(title, movie);
+            return Ok(`Movie "${title}" added successfully with a rental price of $${price} and a rating of ${rating}.`);
         } else {
-            return 'Please login as an admin to add a movie.';
+            return Err('Please login as an admin to add a movie.');
         }
     }),
 
-    rentMovie: update([text, int32], text, (title, rentalDuration) => {
-        if (user && user.loggedIn) {
-            const selectedMovie = movies.find((movie) => movie.title === title);
-            if (selectedMovie) {
-                const rentalPrice = selectedMovie.price * rentalDuration;
-                return `You have successfully rented "${title}" for ${rentalDuration} days. Total cost : $${rentalPrice}.`;
+    rentMovie: update([text, int32], Result(text, text), (title, rentalDuration) => {
+        const user = userStorage.get(ic.caller());
+        if ('Some' in user && user.Some.loggedIn) {
+            const selectedMovie = movieStorage.get(title);
+            if ('Some' in selectedMovie) {
+                const rentalPrice = selectedMovie.Some.price * rentalDuration;
+                return Ok(`You have successfully rented "${title}" for ${rentalDuration} days. Total cost : $${rentalPrice}.`);
             } else {
-                return `Movie "${title}" not found in the list.`;
+                return Err(`Movie "${title}" not found in the list.`);
             }
         } else {
-            return 'Please login to rent a movie.';
+            return Err('Please login to rent a movie.');
         }
     }),
 
-    buyMovie: update([text], text, (title) => {
-        if (user && user.loggedIn) {
-            const selectedMovie = movies.find((movie) => movie.title === title);
-            if (selectedMovie) {
-                if (selectedMovie.hasOwnProperty('purchased') && selectedMovie.purchased) {
-                    return `Movie "${title}" is already purchased by you.`;
+    buyMovie: update([text], Result(text, text), (title) => {
+        const user = userStorage.get(ic.caller());
+        if ('Some' in user && user.Some.loggedIn) {
+            const selectedMovie = movieStorage.get(title);
+            if ('Some' in selectedMovie) {
+                if (selectedMovie.Some.purchased) {
+                    return Err(`Movie "${title}" is already purchased by you.`);
                 } else {
-                    const purchasePrice = selectedMovie.price;
-                    selectedMovie.purchased = true;
-                    return `You have successfully purchased "${title}" for $${purchasePrice}.`;
+                    const purchasePrice = selectedMovie.Some.price;
+                    selectedMovie.Some.purchased = true;
+                    return Ok(`You have successfully purchased "${title}" for $${purchasePrice}.`);
                 }
             } else {
-                return `Movie "${title}" not found in the list.`;
+                return Err(`Movie "${title}" not found in the list.`);
             }
         } else {
-            return 'Please login to buy a movie.';
+            return Err('Please login to buy a movie.');
         }
     }),
-    
 
-    removeMovie: update([text], text, (title) => {
-        if (user && user.loggedIn && user.isAdmin) {
-            const index = movies.findIndex((movie) => movie.title === title);
-            if (index !== -1) {
-                movies.splice(index, 1);
-                return `Movie "${title}" removed successfully.`;
+    removeMovie: update([text], Result(text, text), (title) => {
+        const user = userStorage.get(ic.caller());
+        if ('Some' in user && user.Some.loggedIn && user.Some.isAdmin) {
+            const existingMovie = movieStorage.get(title);
+            if ('Some' in existingMovie) {
+                movieStorage.remove(title);
+                return Ok(`Movie "${title}" removed successfully.`);
             } else {
-                return `Movie "${title}" not found in the list.`;
+                return Err(`Movie "${title}" not found in the list.`);
             }
         } else {
-            return 'Please login as an admin to remove a movie.';
+            return Err('Please login as an admin to remove a movie.');
         }
     }),
 
-    editMovie: update([text, int32, int32], text, (title, newPrice, newRating) => {
-        if (user && user.loggedIn && user.isAdmin) {
-            const selectedMovie = movies.find((movie) => movie.title === title);
+    editMovie: update([text, int32, int32], Result(text, text), (title, newPrice, newRating) => {
+        const user = userStorage.get(ic.caller());
+        if ('Some' in user && user.Some.loggedIn && user.Some.isAdmin) {
+            const selectedMovie = movieStorage.get(title);
 
-            if (selectedMovie) {
+            if ('Some' in selectedMovie) {
 
                 if (newRating < 1 || newRating > 10) {
-                    return 'Invalid rating. Please provide a rating between 1 and 10.';
+                    return Err('Invalid rating. Please provide a rating between 1 and 10.');
                 }
 
-                selectedMovie.price = newPrice;
-                selectedMovie.rating = newRating;
+                selectedMovie.Some.price = newPrice;
+                selectedMovie.Some.rating = newRating;
 
-                return `Movie "${title}" updated successfully. Price : $${newPrice}, Rating : ${newRating}.`;
+                return Ok(`Movie "${title}" updated successfully. Price : $${newPrice}, Rating : ${newRating}.`);
             } else {
-                return `Movie "${title}" not found in the list.`;
+                return Err(`Movie "${title}" not found in the list.`);
             }
         } else {
-            return 'Please login as an admin to edit a movie.';
+            return Err('Please login as an admin to edit a movie.');
         }
     }),
 
-    getMovieList: query([], text, () => {
-        try {
-            if (movies.length > 0) {
-                return `List of available movies : ${JSON.stringify(movies)}`;
-            } else {
-                return 'No movies available yet.';
-            }
-        } catch (error: any) {
-            return `Error: ${error.message}`;
+    getMovieList: query([], Result(Vec(Movie), text), () => {
+        const movies = movieStorage.values();
+        if (movies.length > 0) {
+            return Ok(movies);
+        } else {
+            return Err('No movies available yet.');
         }
     }),
 });
